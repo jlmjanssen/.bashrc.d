@@ -16,18 +16,13 @@ if [[ "${SCRIPT_PATH}" != "${TARGET_PATH}" ]]; then
     exit 1
 fi
 
-if [[ -f ~/.bashrc.d/00.local.bashrc ]]; then
-    echo "Error: .bashrc.d is already installed." >&2
-    exit 1
-fi
-
 if [[ -h ~/.bashrc ]]; then
     echo "Error: ~/.bashrc is already a symlink." >&2
     exit 1
 fi
 
 command -p chmod 700 ~/.bashrc.d
-command -p mv ~/.bashrc ~/.bashrc.d/00.local.bashrc
+command -p mv ~/.bashrc ~/.bashrc.d/.bashrc-$(date +%Y%m%d-%H%M%S)
 command -p ln -s .bashrc.d/bashrc ~/.bashrc
 
 echo ".bashrc.d has been successfully installed."
