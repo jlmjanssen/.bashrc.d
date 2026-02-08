@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 John Janssen <https://github.com/jlmjanssen>
+#
+# SPDX-License-Identifier: CC0-1.0
+
+# See https://pre-commit.com for more information
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.47.0
+    hooks:
+      - id: markdownlint
+        args: ['--disable', 'MD013', '--']
+
+  - repo: https://github.com/fsfe/reuse-tool
+    rev: v6.2.0
+    hooks:
+      - id: reuse
+
+exclude: 'source/'
