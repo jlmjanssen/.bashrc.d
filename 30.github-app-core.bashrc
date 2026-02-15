@@ -15,61 +15,59 @@ b64url() {
 
 get_jwt_token() {
     # Give the input parameters pretty names.
-    local app_id private_key_path
-    app_id="$1"
-    private_key_path="$2"
+    local -r app_id="$1" private_key_path="$2"
 
     # Determine issued-at-time timestamps, and expiration timestamps.
     # (Seconds since UNIX epoch)
-    local -i iat exp
-    iat=$(date +%s)
-    exp=iat+600
+    local -ri iat="$(date +%s)" exp="$((iat + 600))"
 
     # Construct the unsigned token from the header and payload.
-    local header payload unsigned_token
-    header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
-    payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$iat" "$exp" "$app_id" | b64url)
-    unsigned_token="$header.$payload"
+    local -r header="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)"
+    local -r payload="$(printf '%s' '{"iat":%d,"exp":%d,"iss":"%s"}' "${iat}" "${exp}" "${app_id}" | b64url)"
+    local -r unsigned_token="${header}.${payload}"
 
     # Sign the token.
-    local signature signed_token
-    signature=$(printf '%s' "$unsigned_token"  | openssl dgst -sha256 -sign "$private_key_path" | b64url)
-    signed_token="$unsigned_token.$signature"
+    local -r signature="$(printf '%s' "${unsigned_token}"  | openssl dgst -sha256 -sign "${private_key_path}" | b64url)"
+    local -r signed_token="${unsigned_token}.${signature}"
 
     # Return the signed JWT token.
-    printf "%s\n" "$signed_token"
+    printf "%s\n" "${signed_token}"
 }
 
 _init_cache() {
-    if [[ ! -f "$GITHUB_APP_CACHE" ]]; then
-        printf "{}\n" > "$GITHUB_APP_CACHE"
-    fi
+    mkdir -p "$(dirname "${GITHUB_APP_CACHE}")"
+    [[ ! -f "${GITHUB_APP_CACHE}" ]] && printf "{}\n" > "${GITHUB_APP_CACHE}"
 }
 
 _cache_find_installation_entry() {
-    local app_id="$1"
-    local account_login="$2"
+    # Give the input parameters pretty names.
+    local app_id="$1" account_login="$2"
 
-    jq -r --arg app "$app_id" --arg acct "$account_login" '
+    # Search for the combination app_id + account_login.
+    jq -r --arg app "${app_id}" --arg acct "${account_login}" '
         .[$app][]? | select(.account == $acct)
-    ' "$GITHUB_APP_CACHE"
+    ' "${GITHUB_APP_CACHE}"
 }
 
 _cache_set_installation_entry() {
-    local app_id="$1"
-    local installation_id="$2"
-    local account_login="$3"
-    local token="$4"
-    local expires_at="$5"
+    # Give the input parameters pretty names.
+    local app_id="$1" installation_id="$2" account_login="$3" token="$4" expires_at="$5"
+
+    _init_cache
 
     local tmp
     tmp=$(mktemp)
 
-    jq --arg app "$app_id" \
-       --argjson inst_id "$installation_id" \
-       --arg acct "$account_login" \
-       --arg tok "$token" \
-       --arg exp "$expires_at" '
+    # Update the cache entry for this app:
+    # - Load existing entries for this app (or an empty list)
+    # - Remove any entry with the same installation_id
+    # - Append the new entry
+    # - Write the updated structure back to the cache file
+    jq --arg app "${app_id}" \
+       --argjson inst_id "${installation_id}" \
+       --arg acct "${account_login}" \
+       --arg tok "${token}" \
+       --arg exp "${expires_at}" '
        .[$app] = (
            (.[$app] // [])
            | map(select(.installation_id != $inst_id))
@@ -80,9 +78,8 @@ _cache_set_installation_entry() {
                expires_at: $exp
            }]
        )
-    ' "$GITHUB_APP_CACHE" > "$tmp"
-
-    mv "$tmp" "$GITHUB_APP_CACHE"
+    ' "${GITHUB_APP_CACHE}" > "${tmp}" &&
+    mv -f -- "${tmp}" "${GITHUB_APP_CACHE}"
 }
 
 prune_application_token_cache() {
@@ -106,48 +103,45 @@ prune_application_token_cache() {
       )
       # Remove app_ids that now have empty lists
       | with_entries(select(.value | length > 0))
-    ' "$GITHUB_APP_CACHE" > "$tmp"
+    ' "${GITHUB_APP_CACHE}" > "${tmp}" &&
+    mv -f -- "${tmp}" "${GITHUB_APP_CACHE}"
+}
 
-    mv "$tmp" "$GITHUB_APP_CACHE"
+_cache_is_valid() {
+    local entry="$1"
+
+    local expires_at=$(jq -r '.expires_at' <<<"${entry}")
+    local -i expires_epoch=$(date -d "${expires_at}" +%s)
+    local -i now_epoch=$(date +%s)
+
+    (( expires_epoch - now_epoch > 300 ))
 }
 
 update_application_token_cache() {
-    local app_id="$1"
-    local private_key_path="$2"
-    local account_login="$3"
+    local app_id="$1" private_key_path="$2" account_login="$3"
 
     _init_cache
 
     # Look up existing installation entry for this app/account
-    local entry
-    entry="$(_cache_find_installation_entry "$app_id" "$account_login")"
-
-    if [[ -n "$entry" ]]; then
-        local expires_at expires_epoch now_epoch
-        expires_at=$(printf "%s" "$entry" | jq -r '.expires_at')
-        expires_epoch=$(date -d "$expires_at" +%s)
-        now_epoch=$(date +%s)
-
-        # Refresh if less than 5 minutes left
-        if (( expires_epoch - now_epoch > 300 )); then
-            return 0
-        fi
+    local entry="$(_cache_find_installation_entry "${app_id}" "${account_login}")"
+    if [[ -n "$entry" ]] && _cache_is_valid "$entry"; then
+        return 0
     fi
 
     # Either no entry or expired → refresh
     local jwt
-    jwt="$(get_jwt_token "$app_id" "$private_key_path")"
+    jwt="$(get_jwt_token "${app_id}" "${private_key_path}")"
 
     # Find installation ID for this account
     local installation_id
     installation_id="$(curl -s \
-        -H "Authorization: Bearer $jwt" \
+        -H "Authorization: Bearer ${jwt}" \
         -H "Accept: application/vnd.github+json" \
         https://api.github.com/app/installations \
-        | jq -r ".[] | select(.account.login == \"$account_login\") | .id")"
+        | jq -r ".[] | select(.account.login == \"${account_login}\") | .id")"
 
-    if [[ -z "$installation_id" || "$installation_id" == "null" ]]; then
-        printf "Error: No installation found for account '%s'\n" "$account_login" >&2
+    if [[ -z "${installation_id}" || "${installation_id}" == "null" ]]; then
+        printf "Error: No installation found for account '%s'\n" "${account_login}" >&2
         return 1
     fi
 
@@ -155,20 +149,20 @@ update_application_token_cache() {
     local response token expires_at
     response="$(curl -s \
         -X POST \
-        -H "Authorization: Bearer $jwt" \
+        -H "Authorization: Bearer ${jwt}" \
         -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/app/installations/$installation_id/access_tokens")"
+        "https://api.github.com/app/installations/${installation_id}/access_tokens")"
 
-    token=$(printf "%s" "$response" | jq -r '.token')
-    expires_at=$(printf "%s" "$response" | jq -r '.expires_at')
+    token="$(printf "%s" "${response}" | jq -r '.token')"
+    expires_at="$(printf "%s" "${response}" | jq -r '.expires_at')"
 
-    if [[ -z "$token" || "$token" == "null" ]]; then
-        printf "Error: Could not retrieve installation token for '%s'\n" "$account_login" >&2
+    if [[ -z "${token}" || "${token}" == "null" ]]; then
+        printf "Error: Could not retrieve installation token for '%s'\n" "${account_login}" >&2
         return 1
     fi
 
     # Store updated entry
-    _cache_set_installation_entry "$app_id" "$installation_id" "$account_login" "$token" "$expires_at"
+    _cache_set_installation_entry "${app_id}" "${installation_id}" "${account_login}" "${token}" "${expires_at}"
 }
 
 get_application_token() {
